@@ -24,6 +24,7 @@ The brain lives in MetaEnvironment:
   - Field receives EnvironmentSignal from each task env every 100 steps
 """
 from meta_env.environment import MetaEnvironment, META_MANIFEST
+from meta_env.checkpointer import Checkpointer
 
 __version__ = "0.1.0"
-__all__ = ["MetaEnvironment", "META_MANIFEST"]
+__all__ = ["MetaEnvironment", "META_MANIFEST", "Checkpointer"]

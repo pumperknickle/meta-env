@@ -8,6 +8,7 @@ A brain never exists "outside" an environment. Between task environments, it liv
 
 ```bash
 pip install meta-env
+pip install meta-env[redis]   # Redis checkpoint backend
 ```
 
 Depends on `ecoframe`.
@@ -63,6 +64,46 @@ While in meta (no active task env), `step_wait()` returns `SensorBundle` per bra
 | `self_state` (proprioceptive) | `(4,)` | `[ce_ema, session_count, steps_in_meta, energy]` |
 
 While proxying a task env, `step_wait()` returns that env's bundles unchanged and exposes that env's manifest.
+
+## Checkpointing
+
+`Checkpointer` saves and restores brain state dicts. It works standalone (external loop) or wired into MetaEnvironment (automatic).
+
+```python
+from meta_env import MetaEnvironment, Checkpointer
+
+ckpt = Checkpointer(path='/tmp/brains', keep_last=3)      # disk (default)
+# ckpt = Checkpointer(backend='redis', url='redis://...')  # Redis
+
+# Wired into MetaEnvironment — auto-saves every 500 steps, restores on enter
+meta = MetaEnvironment(field=field, checkpointer=ckpt, checkpoint_interval=500)
+session = meta.enter('brain_0', brain_obj=brain)   # restores from latest checkpoint if one exists
+
+# Manual checkpoint from inside the training loop
+meta.checkpoint_brain('brain_0')
+```
+
+**Standalone** (same `Checkpointer`, used externally):
+
+```python
+for step, metrics in engine.run(n_steps=2_000_000):
+    if step % 500 == 0:
+        ckpt.save('brain_0', brain.get_state(), step=step)
+
+# On restart:
+state = ckpt.load('brain_0')
+if state:
+    brain.set_state(state)
+```
+
+Both paths use the same `Checkpointer` instance and the same checkpoint files — no duplication.
+
+**Backends:**
+
+| Backend | Install | When to use |
+|---------|---------|-------------|
+| `disk` (default) | — | Single machine, human-inspectable `.pkl` files |
+| `redis` | `meta-env[redis]` | Distributed workers sharing one checkpoint store |
 
 ## Cert signal handling
 

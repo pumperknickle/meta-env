@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+redis = ["redis>=5.0"]
+dev   = ["pytest>=7.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/meta_env"]

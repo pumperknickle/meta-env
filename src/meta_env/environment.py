@@ -67,6 +67,10 @@ class MetaEnvironment:
     - receives ActionBundles describing navigation intent
     - when brain navigates toward a known env: auto-calls brain.enter(env)
     - when brain navigates away or env is mastered: auto-calls brain.exit(env)
+
+    Optional checkpointing: pass a Checkpointer and checkpoint_interval to
+    automatically save each brain's state every N steps. The same Checkpointer
+    instance can also be used externally by the training loop.
     """
 
     env_id   = "meta"
@@ -75,18 +79,25 @@ class MetaEnvironment:
 
     def __init__(
         self,
-        field:            Field | None  = None,
-        enter_threshold:  float         = 2.0,   # min curiosity to auto-enter
-        exit_threshold:   float         = 1.0,   # max curiosity to auto-exit
-        verbose:          bool          = False,
+        field:                Field | None   = None,
+        enter_threshold:      float          = 2.0,
+        exit_threshold:       float          = 1.0,
+        verbose:              bool           = False,
+        checkpointer                         = None,   # Checkpointer | None
+        checkpoint_interval:  int            = 1000,   # steps between auto-saves
     ):
-        self._field            = field or Field(backend='local')
-        self._enter_threshold  = enter_threshold
-        self._exit_threshold   = exit_threshold
-        self._verbose          = verbose
+        self._field               = field or Field(backend='local')
+        self._enter_threshold     = enter_threshold
+        self._exit_threshold      = exit_threshold
+        self._verbose             = verbose
+        self._checkpointer        = checkpointer
+        self._checkpoint_interval = checkpoint_interval
 
         # Active sessions: brain_id → Session
         self._sessions: dict[str, Session] = {}
+
+        # Brain protocol refs for checkpointing: brain_id → BrainProtocol
+        self._brain_refs: dict = {}
 
         # Known task environments (registered via register_env)
         self._known_envs: dict[str, EnvironmentProtocol] = {}
@@ -129,11 +140,27 @@ class MetaEnvironment:
         pass   # MetaEnvironment doesn't own resources
 
     def enter(self, brain_id: str,
-              ssm_state: dict | None = None) -> Session:
+              ssm_state: dict | None = None,
+              brain_obj             = None) -> Session:
         """
         Brain enters the meta environment.
         Always succeeds — meta has unlimited capacity.
+
+        brain_obj: optional BrainProtocol reference. Required for automatic
+        checkpointing. If a Checkpointer is configured and brain_obj is provided,
+        the brain's state is restored from the latest checkpoint on entry.
         """
+        if brain_obj is not None:
+            self._brain_refs[brain_id] = brain_obj
+            if self._checkpointer is not None:
+                saved = self._checkpointer.load(brain_id)
+                if saved is not None:
+                    brain_obj.set_state(saved)
+                    if self._verbose:
+                        step = self._checkpointer.latest_step(brain_id)
+                        print(f"MetaEnv.enter: restored brain={brain_id} "
+                              f"from step {step}", flush=True)
+
         session = Session(
             brain_id   = brain_id,
             env_id     = self.env_id,
@@ -213,6 +240,10 @@ class MetaEnvironment:
         """
         self._step_count += 1
 
+        if (self._checkpointer is not None
+                and self._step_count % self._checkpoint_interval == 0):
+            self._auto_checkpoint()
+
         if self._active_env is not None:
             bundles = self._active_env.step_wait()
             if self._step_count % 100 == 0:
@@ -275,6 +306,45 @@ class MetaEnvironment:
 
         self._pending_actions = {}
         return bundles
+
+    # ── Checkpointing ────────────────────────────────────────────────────────
+
+    def checkpoint_brain(self, brain_id: str) -> None:
+        """
+        Manually checkpoint one brain immediately.
+
+        Works whether or not a Checkpointer was configured at construction:
+        caller can pass a Checkpointer to use, or configure one upfront.
+        Raises RuntimeError if no checkpointer is available.
+        """
+        if self._checkpointer is None:
+            raise RuntimeError(
+                "No Checkpointer configured. Pass checkpointer= to MetaEnvironment "
+                "or call: meta_env._checkpointer = Checkpointer(...)"
+            )
+        brain = self._brain_refs.get(brain_id)
+        if brain is None:
+            raise RuntimeError(
+                f"No brain_obj registered for '{brain_id}'. "
+                "Pass brain_obj= to enter()."
+            )
+        self._checkpointer.save(brain_id, brain.get_state(), step=self._step_count)
+        if self._verbose:
+            print(f"MetaEnv: checkpointed brain={brain_id} at step {self._step_count}",
+                  flush=True)
+
+    def _auto_checkpoint(self) -> None:
+        for brain_id, brain in self._brain_refs.items():
+            try:
+                self._checkpointer.save(brain_id, brain.get_state(),
+                                        step=self._step_count)
+                if self._verbose:
+                    print(f"MetaEnv: auto-checkpoint brain={brain_id} "
+                          f"step={self._step_count}", flush=True)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "MetaEnv: checkpoint failed for brain=%s: %s", brain_id, exc)
 
     # ── Signal publishing ─────────────────────────────────────────────────────
 
