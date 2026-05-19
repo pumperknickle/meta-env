@@ -90,10 +90,10 @@ class MetaEnvironment:
 
         # Known task environments (registered via register_env)
         self._known_envs: dict[str, EnvironmentProtocol] = {}
-
-        # Active task environment — when set, step_async/step_wait proxy here.
-        # None means brain is between task envs, navigating via field gradient.
         self._active_env: EnvironmentProtocol | None = None
+
+        # Optional BrainRegistry — set externally to enable cert tracking
+        self.registry = None   # BrainRegistry | None
 
         # Per-brain state
         self._brain_pos:    dict[str, tuple[float, float]] = {}
@@ -217,6 +217,14 @@ class MetaEnvironment:
             bundles = self._active_env.step_wait()
             if self._step_count % 100 == 0:
                 self._publish_env_signal(self._active_env)
+
+            # Check for CertSignal — cert env publishes when evaluation done
+            self._check_cert_signals()
+
+            # If any agent is done and active env is a cert env, exit it
+            if any(b.done for b in bundles.values()):
+                self._exit_task_env(self._sessions.get(
+                    next(iter(self._sessions), None)))
             return bundles
 
         self._field.step()
@@ -269,6 +277,20 @@ class MetaEnvironment:
         return bundles
 
     # ── Signal publishing ─────────────────────────────────────────────────────
+
+    def _check_cert_signals(self) -> None:
+        """
+        Read CertSignals from Field. When one arrives for a brain we know,
+        call registry.record_cert() to update certifications + rate limits.
+        """
+        if self.registry is None:
+            return
+        from ecoframe.signal import CertSignal
+        for sig in self._field.query(pos=(0.0, 0.0), radius=100.0):
+            if not isinstance(sig, CertSignal):
+                continue
+            if sig.brain_id in self._sessions:
+                self.registry.record_cert(sig.brain_id, sig)
 
     def _publish_env_signal(self, env: EnvironmentProtocol) -> None:
         """Publish the active task env's state into the Field."""
